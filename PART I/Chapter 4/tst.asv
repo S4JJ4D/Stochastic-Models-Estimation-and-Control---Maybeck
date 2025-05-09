@@ -1,0 +1,115 @@
+%%
+% (I): NO control inputs are applied. System is driven only by WGN.
+% continous-time model (model of the real physical process) is given by
+% \dot{x} = A x + G w
+% where w is WGN with intensity Q (possibly time-varying)
+% In order to "simulate the system", we construct the discrete-time
+% "equivalent model" in the sense that the discrete-time model’s 
+% values of x(t1), x(t2), . . . , are identical (in probabilistic sense)
+% to those of the continuous-time model at these particular times. 
+% this discrete-time model is given by
+% x(k+1) = Ad x(k) + wd
+% where Ad = expm(Ah) and h is the sampling period
+% and wd is the discrete-time GWN with covariance matrix Qd given by
+% Equation (4-127b). 
+
+
+clear;
+
+[k,m] = deal(1,2);
+
+A = [0, 1;-k/m, 0];
+h = .02;
+Ad = expm(A*h);
+
+G = [0;1/m];
+Q = .1; % process noise covariance
+
+Qd = ...
+[Q*(h/(2*k*m) - sin((2*h*k^(1/2))/m^(1/2))/(4*k^(3/2)*m^(1/2))),(Q*sin((h*k^(1/2))/m^(1/2))^2)/(2*k*m);
+(Q*sin((h*k^(1/2))/m^(1/2))^2)/(2*k*m),Q*(h/(2*m^2) + sin((2*h*k^(1/2))/m^(1/2))/(4*k^(1/2)*m^(3/2)))];
+
+sys = ss(Ad, eye(2), eye(2), zeros(2), h);
+
+Tf = 20;
+tvec = 0:h:Tf;
+u = mvnrnd([0 0], Qd, numel(tvec));
+x0 = [1;3];
+x = lsim(sys, u, tvec, x0);
+
+mx = @(t) ...
+[cos((k^(1/2)*t)/m^(1/2)), (m^(1/2)*sin((k^(1/2)*t)/m^(1/2)))/k^(1/2);
+-(k^(1/2)*sin((k^(1/2)*t)/m^(1/2)))/m^(1/2), cos((k^(1/2)*t)/m^(1/2))] * x0;
+
+P = @(t) ...
+[Q*(t/(2*k*m) - sin((2*k^(1/2)*t)/m^(1/2))/(4*k^(3/2)*m^(1/2))), (Q*sin((k^(1/2)*t)/m^(1/2))^2)/(2*k*m);
+(Q*sin((k^(1/2)*t)/m^(1/2))^2)/(2*k*m), Q*(t/(2*m^2) + sin((2*k^(1/2)*t)/m^(1/2))/(4*k^(1/2)*m^(3/2)))];
+
+
+mxvec = cell2mat(arrayfun(mx, tvec, 'UniformOutput', false));
+
+
+cla;
+% plot(x(1,1), x(1,2), 'r*');
+% hold on;
+% plot(x(:,1), x(:,2), 'bo');
+plot(mxvec(1,:), mxvec(2,:), 'k-');
+hold on; grid on; box on; axis equal;
+xlabel('x'); ylabel('y');
+
+X = cellipse(mx(tvec(1)), P(tvec(1)), 2);
+cellipse_patch = patch('XData',X(1,:),'YData',X(2,:), 'FaceColor', 'r', 'FaceAlpha', .1);
+cellipse_com = plot(mxvec(1,1), mxvec(, 'k*');
+for i=1:30:numel(tvec)
+    X = cellipse(mx(tvec(i)), P(tvec(i)), 1);
+%     patch('XData',X(1,:),'YData',X(2,:), 'FaceColor', 'r', 'FaceAlpha', .1);
+    set(cellipse_patch, 'XData', X(1,:), 'YData', X(2,:));
+    com = mx(tvec(i));
+    set(cellipse_com, 'XData', com(1), 'YData', com(2));
+    pause(.2);
+end
+
+P0 = zeros(2);
+% [t,Pt] = ode45(@P_odefcn, tvec, zeros(2));
+
+function X = cellipse(mu, P, c)
+%C-Ellipse: Covariance ellipse of a bivariate normal distribution
+% given the covariance matrix and the mean vector of a bivariate Gaussian
+% distributoin, the c-ellipse is returned:
+% equation of the ellipse is given by
+% (x-mu)' inv(P) (x-mu) - c = 0
+% where x is the 2D position vecotr [x,y]
+%
+% X(1,:) is the x-component of the ellipse
+% X(2,:) is the y-component of the ellipse
+%
+% c=1 corresponds the  q-ellipse
+% c=2 corresponse the 2q-ellipse
+% ...
+%
+% example:
+% P = [2.9087, 2.4783;
+%     2.4783, 6.0913]
+% mu = [1;2];
+% 
+% X = cellipse(mu, P, 1);
+% patch('XData',X(1,:),'YData',X(2,:), 'FaceColor', 'r', 'FaceAlpha', .2);
+
+[Q,L] = eig(P);
+R = (Q /(sqrt(L))).';
+Ri = Q*sqrt(L);
+
+theta = 0:.05:2*pi;
+y = sqrt(c)*[cos(theta);sin(theta)];
+X = (Ri * y) + mu;
+end
+
+function dPdt = P_odefcn(t,P)
+P = zeros(2);
+A = [0 1;-1 0];
+dPdt = A*P + P*A.' + eye(2);
+end
+
+
+
+

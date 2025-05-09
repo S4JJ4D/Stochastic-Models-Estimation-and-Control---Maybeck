@@ -1,0 +1,199 @@
+%%
+clc; clear; close all;
+syms p(t)
+syms a p0 real positive
+% a = 1/r
+S = dsolve(diff(p,t) == 2*p - a*(p^2) + 1, p(0)==p0)
+simplify(limit(S,t,Inf),'Steps',10)
+
+%%
+clear;
+close all;
+figure('Position',[313 62 945 797]);
+t = 0:.01:5;
+p = @(t,a,p0) (tanh(atanh((a*p0 - 1)/(a + 1)^(1/2)) + t*(a + 1)^(1/2))*(a + 1)^(1/2) + 1)/a;
+
+tl = tiledlayout(2,2,"TileSpacing","compact","Padding","compact");
+for r=[1,2,4]
+    a = 1/r;
+    ax = nexttile;
+    plot(t,p(t,a,1), 'DisplayName', sprintf('p(t) | r=%d',r));
+    hold on; box on; xlabel('time'); ylabel('p(t)');
+    yline(sqrt(r^2 + r) + r, 'k--', num2str(sqrt(r^2 + r) + r), ...
+        'LabelHorizontalAlignment', 'left', ...
+        'LabelVerticalAlignment', 'bottom', ...
+        'FontName', 'Source Code Pro', ...
+        'HandleVisibility', 'off');
+    set(ax, 'XMinorTick', 'on', 'YMinorTick', 'on', ...
+        'Box', 'on', 'FontName', 'Source Code Pro');
+    set([ax.XAxis, ax.YAxis], 'Color', '#737373', 'TickLabelColor', 'k',...
+        'LineWidth',.8);
+    set([ax.XLabel, ax.YLabel], 'Color', 'k');
+    grid on;
+    legend;
+end
+title(tl,'$p(\infty) = \sqrt{r^2 + r} + r$','Interpreter','latex')
+%%
+F = 1;
+B = 0;
+G = 1;
+H = 1;
+Q = 1;
+Rc = 1;
+
+Ts = 1e-3;           % observation sample time
+tspan = [0,5];     % time vector
+x0 = 1;             % deviations from nominal trajectory @ t = t_0
+xhat0 = 0;          % initial estimate of deviations from nominal trajectory @ t = t_0
+P0 = 1;             % confidence over the initial estimate of deviations from nominal trajectory @ t = t_0
+
+
+R = Rc/Ts;
+FCN(F,B,H,G,Q,R,Ts,tspan,x0,xhat0,P0)
+
+function [] = FCN(F,B,H,G,Q,R,Ts,tspan,x0,xhat0,P0)
+
+% continuous-time process system model
+% 'F' dynamics matrix
+% 'B' control input matrix
+% 'H' observation matrix
+% 'G' noise input matrix:
+% 'Ts' sampling time of the process for measurement purposes
+% 'tspan' the time interval in which the measurements are taken: the first measurement is taken at tspan(1) and the last on at tspan(2)
+% 'x0' initial value for the state at time tspan(1) [Generally unkown to the observer]
+% 'xhat0' initial estimate of the state
+% 'P0'  estimate certainty
+
+% In simulation, we are also concerned with simulating the physical
+% continuous-time process. To do that we should use (4-125)
+% time-invariance is assumed in the following computations
+Phi = expm(F*Ts);
+Qd = integral(@(tau) expm(F * (Ts - tau)) * G * Q * G.' * expm(F.' * (Ts - tau)), 0, Ts, ...
+    'AbsTol', 1e-12, 'RelTol', 1e-9, 'ArrayValued', true);
+
+[Vw,Dw] = eig(Qd);
+Tw = (Vw*sqrt(Dw)); % to be used in SIMULINK
+
+[Vv,Dv] = eig(R);
+Tv = (Vv*sqrt(Dv)); % % to be used in SIMULINK
+
+[m,n] = size(H);
+
+
+tvec = (tspan(1):Ts:tspan(2)).'; % uniform sampling of the process
+% tvec = (nugrid(tspan(1), tspan(2), 801)).'; %non-uniform sampling of the process
+N = numel(tvec); % number of measurements taken
+
+% when discretizing, wd has dimension [n x 1] and thus the B matrix in the
+% discretized system is the identity matrix.
+% take both states in the output for subsequent processing. sysd is only
+% used to simulate the cont-time process.
+% sysd = ss(Phi, eye(n), eye(n), zeros(n), Ts);
+
+
+% generating discrete-time noise process
+rng('default');
+w = mvnrnd(zeros(1,n), Qd, numel(tvec)).'; % process noise
+v = mvnrnd(zeros(1,m), R, numel(tvec)).';  % measurement nosie
+
+% simulate the system under the action of noise
+x = [x0, zeros(n,N-1)];
+for i=1:N-1
+    x(:,i+1) = expm(F*(tvec(i+1) - tvec(i)))*x(:,i) + w(:,i);
+end
+% alternatively:
+% x = lsim(sysd, w.', tvec.', x0).';
+
+figure('Position',[313 62 945 797]);
+tl = tiledlayout(1,1,'TileSpacing','compact','Padding','compact');
+
+pltNames = {'x_1'};
+for i=1:n
+    ax = nexttile(i);
+    plot(tvec.', x(i,:), 'b-', 'DisplayName', pltNames{i});
+    hold on; box on; xlabel('time'); ylabel(pltNames{i});
+    set(ax, 'XMinorTick', 'on', 'YMinorTick', 'on', ...
+        'Box', 'on', 'FontName', 'Source Code Pro');
+    set([ax.XAxis, ax.YAxis], 'Color', '#737373', 'TickLabelColor', 'k',...
+        'LineWidth',.8);
+    set([ax.XLabel, ax.YLabel], 'Color', 'k');
+    grid on;
+end
+
+%% kalman filter loop
+xhat = zeros(n,N); % corresponding to each measurement there is an estimate
+P = zeros(n,n,N); % uncertainty in the estimate
+
+z = H*x + v; % noisy observations of the state process x(.,.) at sample times in tspan
+
+% x_ are the best estimates of x based on all previous observations, just
+% before the new measurement is taken.
+
+
+K = zeros(n,m,N); % filter gain
+for i=1:N
+    if i==1
+        % your knowledge of the process just before the first measurement
+        % is taken. If you have information about the process in the other
+        % previous time < t0, you can propagate it into the time t0(-) using
+        % the time update equations (5-36, 5-37).
+        x_ = xhat0; % xhat @ t = t0(-)
+        P_ = P0;  % P    @ t = t0(-)
+    end
+    % 1. process the measurement by updating the estimate and its
+    % covariance
+    K(:,:,i) = P_ * ((H.') / (H*P_*H.' + R));
+    xhat(:,i) = x_ + K(:,:,i)*(z(:,i) - H*x_);
+    P(:,:,i) = P_ - K(:,:,i)*H*P_;
+
+    % 2. propagate the estimate until the next measurement is obtained. The
+    % estimate moves under the action of the vector field. Interval of
+    % integration [t_{i}, t_{i+1}]
+    if i~=N
+        x_ = Phi * xhat(:,i);
+        P_ = Phi * P(:,:,i) * Phi.' + Qd;
+    end
+end
+
+for i=1:n
+    nexttile(i);
+    % plot estimated states
+    plot(tvec.', xhat(i,:), 'k-', 'DisplayName', [char([120 770]),'_',num2str(i)]);
+    % plot 95 confidence region
+    pu = xhat(i,:).' + 2*sqrt(squeeze(P(i,i,:)));
+    pl = xhat(i,:).' - 2*sqrt(squeeze(P(i,i,:)));
+    sp = cshade(tvec, pl, pu);
+    set(sp, 'DisplayName', '95% confidence region');
+    legend('FontSize',10);
+end
+
+title(tl, ['Q=', mat2str(Q), ' | R_c=', mat2str(Ts*R), ' | Ts=', num2str(Ts), ...
+    newline, ['H=',mat2str(H)]], ...
+    'FontName', 'Source Code Pro');
+
+%% Plot Covariance
+Pcell = squeeze(mat2cell(P,n,n,ones(1,N)));
+Peigs = cellfun(@eig,Pcell,'UniformOutput',false);
+PeigsNorm = cellfun(@vecnorm,Peigs); %1
+
+Peigs_ = Peigs.';
+PeigsMat = [Peigs_{:}];  %2
+
+figure('Position',[313 62 945 797]);
+tl = tiledlayout(1,1,'TileSpacing','compact','Padding','compact');
+for i=1:n
+    ax = nexttile(i);
+    plot(tvec, squeeze(P(i,i,:)), 'b-', 'DisplayName', sprintf('P_{%d%d}',i,i));
+    hold on; box on; xlabel('time'); ylabel(sprintf('P_{%d%d}',i,i));
+    set(ax, 'XMinorTick', 'on', 'YMinorTick', 'on', ...
+        'Box', 'on', 'FontName', 'Source Code Pro');
+    set([ax.XAxis, ax.YAxis], 'Color', '#737373', 'TickLabelColor', 'k',...
+        'LineWidth',.8);
+    set([ax.XLabel, ax.YLabel], 'Color', 'k');
+    grid on;
+end
+title(tl, ['Case: H=', mat2str(H)], 'FontName', 'Source Code Pro');
+Rc = Ts*R;
+yline(sqrt(Rc^2 + Rc) + Rc, 'k--');
+
+end
